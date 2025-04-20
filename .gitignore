@@ -1,3 +1,7 @@
 .venv
+csvs/
 .env
 *.ipynb
+*.csv
+__pycache__
+*.pyc
