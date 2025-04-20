@@ -3,3 +3,6 @@ huggingface_hub
 supabase
 python-dotenv
 langchain-community
+google-generativeai
+pandas
+pillow
