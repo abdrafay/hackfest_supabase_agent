@@ -13,6 +13,7 @@ import google.generativeai as genai
 # Supabase config
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Gemini config
@@ -22,6 +23,8 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_WHISPER_MODEL = "whisper-large-v3"
+
 
 # ------------------------ GEMINI IMAGE ANALYSIS ------------------------
 
@@ -55,6 +58,69 @@ def extract_total_from_receipt(receipt_url):
 
     except Exception as e:
         return f"Error: {str(e)}"
+    
+
+# ------------- AUDIO TRANSCRIBER AND SUMMARIZER -------------
+
+def transcribe_audio_from_url(audio_url):
+    try:
+        # Download audio from URL
+        audio_response = requests.get(audio_url)
+        audio_response.raise_for_status()
+
+        files = {
+            'file': ('audio.mp3', audio_response.content, 'audio/mpeg')
+        }
+
+        headers = {
+            'Authorization': f'Bearer {GROQ_API_KEY}',
+        }
+
+        data = {
+            "model": GROQ_WHISPER_MODEL,
+        }
+
+        # Send transcription request
+        whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        response = requests.post(whisper_url, headers=headers, data=data, files=files)
+        result = response.json()
+
+        transcription = result.get("text", None)
+        if not transcription:
+            return "No transcription found."
+
+        # Now summarize the transcription
+        summary = summarize_text(transcription)
+        return summary
+
+    except Exception as e:
+        return f"Error during transcription: {str(e)}"
+
+def summarize_text(transcription_text):
+    try:
+        summarize_url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "model": "llama-3.3-70b-versatile",  # or another available LLM model from Groq
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant that summarizes text in english."},
+                {"role": "user", "content": f"Please summarize this transcription and convert in english: {transcription_text}"}
+            ],
+            "temperature": 0.5
+        }
+
+        response = requests.post(summarize_url, headers=headers, json=data)
+        response.raise_for_status()
+        result = response.json()
+
+        return result["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        return f"Error during summarization: {str(e)}"
 
 # ------------------------ GROQ AGENT ------------------------
 
@@ -118,6 +184,33 @@ def get_groq_response(prompt):
     reply = result['choices'][0]['message']['content']
     conversation_history.append({"role": "assistant", "content": reply})
     return reply
+
+def transcribe_audio_from_url(audio_url):
+    try:
+        audio_response = requests.get(audio_url)
+        audio_response.raise_for_status()
+
+        files = {
+            'file': ('audio.mp3', audio_response.content, 'audio/mpeg')
+        }
+
+        headers = {
+            'Authorization': f'Bearer {GROQ_API_KEY}',
+        }
+
+        data = {
+            "model": GROQ_WHISPER_MODEL,
+        }
+
+        whisper_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        response = requests.post(whisper_url, headers=headers, data=data, files=files)
+        result = response.json()
+
+        return result.get("text", "No transcription found.")
+
+    except Exception as e:
+        return f"Error during transcription: {str(e)}"
+
 
 # ------------------------ SUPABASE EXECUTOR ------------------------
 
@@ -208,7 +301,7 @@ def render_result(user_prompt, sql_query, result):
 
 def main():
     # user_input = input("💬 Enter your request: ")
-    user_input = "get receipt url with name Robert Jones and amount"
+    user_input = "get latest audio url and summarize"
 
     # Get natural language → SQL from Groq
     sql_query = get_groq_response(user_input)
@@ -227,17 +320,36 @@ def main():
             # Process receipt with Gemini
             total = extract_total_from_receipt(result['image_url'])
             print(f"🧾 Total on receipt: Rs. {total}")
-            return
+            if total:
+                # update the supabase table with that amount with by comparing image_url to get teh row
+                res = supabase.table("refund_requests").update({"amount": total}).eq("image_url", result['image_url']).execute() 
+                if not res:
+                    print("⚠️ Failed to update the amount in the database.")
         elif isinstance(result, list):
             # Process each receipt image URL
             for item in result:
                 if 'image_url' in item:
                     total = extract_total_from_receipt(item['image_url'])
                     print(f"🧾 Total on receipt: Rs. {total}")
+                    res = supabase.table("refund_requests").update({"amount": total}).eq("image_url", result['image_url']).execute() 
+                    if not res:
+                        print("⚠️ Failed to update the amount in the database.")
                 else:
                     print("⚠️ No image URL found in the result.")
 
-    
+    if "audio_url" in sql_query:
+        print("🎙️ Detected audio transcription request using Whisper...")
+
+        if isinstance(result, dict) and 'audio_url' in result:
+            transcription = transcribe_audio_from_url(result['audio_url'])
+            print(f"📝 Summarized Transcription: {transcription}")
+        elif isinstance(result, list):
+            for item in result:
+                if 'audio_url' in item:
+                    transcription = transcribe_audio_from_url(item['audio_url'])
+                    print(f"📝 Summarized Transcription: {transcription}")
+                else:
+                    print("⚠️ No audio URL found in result.")
     
 
 # ------------------------ RUN AGENT ------------------------
