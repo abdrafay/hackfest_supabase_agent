@@ -12,12 +12,14 @@ from gemini_vision import extract_total_from_receipt
 from audio_transcriber import transcribe_audio_from_url
 from supabase_helper import execute_supabase_query
 from groq_agent import get_groq_response
+import json_repair
 
 # ------------------------ CONFIGURATION ------------------------
 
 # Supabase config
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_BUCKET = 'receipt-images'
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -29,6 +31,63 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_WHISPER_MODEL = "whisper-large-v3"
+
+
+# ------------------------ UTILITIES ------------------------
+
+def fetch_image_url_from_storage(file_name):
+    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{file_name}"
+
+def process_receipt_batch(task_info):
+    start = task_info["start_index"]
+    end = task_info["end_index"]
+    file_pattern = task_info["file_pattern"]
+    table = "refund_requests"
+    image_url_col = "image_url"
+    amount_col = "amount"
+    id_col = "id"
+
+    for i in range(start, end + 1):
+        file_name = file_pattern.replace("{i}", str(i))
+        image_url = fetch_image_url_from_storage(file_name)
+
+        print(f"\n📄 Processing {file_name} (row id = {i})")
+        total = extract_total_from_receipt(image_url)
+        print(f"🧾 Extracted Total: {total}")
+
+        if total and total.replace('.', '', 1).isdigit():
+            update_result = supabase.table(table).update({
+                image_url_col: image_url,
+                amount_col: float(total)
+            }).eq(id_col, i).execute()
+
+            if update_result.data:
+                print(f"✅ Updated row {i}")
+            else:
+                print(f"⚠️ Failed to update row {i}")
+        else:
+            print(f"❌ Could not extract valid total from image {file_name}")
+
+def process_receipt_single(task_info):
+    file_name = task_info["file_name"]
+    image_url = fetch_image_url_from_storage(file_name)
+    print(f"\n📄 Processing {file_name}")
+    total = extract_total_from_receipt(image_url)
+    print(f"🧾 Extracted Total: {total}")
+
+    if total and total.replace('.', '', 1).isdigit():
+        update_result = supabase.table("refund_requests").update({
+            "image_url": image_url,
+            "amount": float(total)
+        }).eq("id", task_info['start_index']).execute()
+
+        if update_result.data:
+            print(f"✅ Updated row {task_info['row_id']}")
+        else:
+            print(f"⚠️ Failed to update row {task_info['row_id']}")
+    else:
+        print(f"❌ Could not extract valid total from image {file_name}")
+
 
 
 # ------------------------ OUTPUT FORMATTER ------------------------
@@ -91,6 +150,8 @@ def main():
 
         # Get natural language → SQL from Groq
         sql_query = get_groq_response(user_input)
+
+
         print("💡 Generated SQL:\n", sql_query)
 
         # Run regular SQL query otherwise
@@ -98,30 +159,22 @@ def main():
         render_result(user_input, sql_query, result)
         
 
-        # Check if the query requires image_url (receipt)
-        if "image_url" in sql_query and any(word in user_input.lower() for word in ["amount", "total"]):
-            print("📷 Detected visual query. Using Gemini to scan receipt...")
-            # check type of result is dict
-            if isinstance(result, dict):
-                # Process receipt with Gemini
-                total = extract_total_from_receipt(result['image_url'])
-                print(f"🧾 Total on receipt: Rs. {total}")
-                if total:
-                    # update the supabase table with that amount with by comparing image_url to get teh row
-                    res = supabase.table("refund_requests").update({"amount": total}).eq("image_url", result['image_url']).execute() 
-                    if not res:
-                        print("⚠️ Failed to update the amount in the database.")
-            elif isinstance(result, list):
-                # Process each receipt image URL
-                for item in result:
-                    if 'image_url' in item:
-                        total = extract_total_from_receipt(item['image_url'])
-                        print(f"🧾 Total on receipt: Rs. {total}")
-                        res = supabase.table("refund_requests").update({"amount": total}).eq("image_url", result['image_url']).execute() 
-                        if not res:
-                            print("⚠️ Failed to update the amount in the database.")
-                    else:
-                        print("⚠️ No image URL found in the result.")
+        if "process_receipts" in sql_query:
+            # regex to get json from the sql_query ```json
+            json_str = re.search(r'```json\s*(\{.*?\})\s*```|(\{.*\})', sql_query, re.DOTALL)
+            if json_str:
+                extracted_json = json_str.group(1) if json_str.group(1) else json_str.group(2)
+        
+                task = json_repair.loads(extracted_json)
+                if task['single_image']:
+                    print("⚠️ Single image detected. Processing...")
+                    # Process single image
+                    process_receipt_single(task)
+                else:
+                    print("⚠️ Batch processing detected. Processing...")
+                    # Process batch of images
+                    process_receipt_batch(task)
+            return
 
         if "audio_url" in sql_query:
             print("🎙️ Detected audio transcription request using Whisper...")
