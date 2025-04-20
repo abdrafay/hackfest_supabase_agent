@@ -158,7 +158,7 @@ def main():
         result = execute_supabase_query(sql_query)
         render_result(user_input, sql_query, result)
         
-
+        print("💡 SQL Result:\n", result)
         if "process_receipts" in sql_query:
             # regex to get json from the sql_query ```json
             json_str = re.search(r'```json\s*(\{.*?\})\s*```|(\{.*\})', sql_query, re.DOTALL)
@@ -176,7 +176,7 @@ def main():
                     process_receipt_batch(task)
             return
 
-        if "audio_url" in sql_query:
+        if "audio_url" in sql_query and "summary" in user_input.lower():
             print("🎙️ Detected audio transcription request using Whisper...")
 
             if isinstance(result, dict) and 'audio_url' in result:

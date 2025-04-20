@@ -24,6 +24,19 @@ conversation_history = [
             2. Construct the Query
             3. Validate the Query
 
+            If a user refers to an image or total amount and not audio and it's not in the table, DO NOT generate SQL but give the answer in the following format
+            if single image then single_image would be true and end_index would be 0 and start index would be the index but do not confuse with audio. Its just for image. Its not for audio. If the user asks for audio then do not give json.
+
+            {
+            "task": "process_receipts",
+            "start_index": 1,
+            "end_index": 10,
+            "single_image": False,
+            "file_pattern": "refund_req{i}.png",
+            }
+
+            Only give that json nothing else if the user asks for images.
+
             Table: employees  
             Columns:  
             - id (id)  
@@ -49,8 +62,6 @@ conversation_history = [
 
             # Output Format
             Provide a clean, efficient SQL query. The output should be a text response showing only the SQL query.
-
-            Try to include 'image_url' in SQL queries if the user is asking for anything related to a receipt or amount from a scanned image.
         """
     }
 ]
